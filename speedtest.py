@@ -15,6 +15,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import base64
 import csv
 import datetime
 import errno
@@ -26,6 +27,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 import timeit
 import xml.parsers.expat
 
@@ -165,6 +167,7 @@ except ImportError:
         """UTF-8 encoded wrapper around stdout for py3, to override
         ASCII stdout
         """
+
         def __init__(self, f, **kwargs):
             buf = FileIO(f.fileno(), 'w')
             super(_Py3Utf8Output, self).__init__(
@@ -418,6 +421,7 @@ class SpeedtestHTTPConnection(HTTPConnection):
     """Custom HTTPConnection to support source_address across
     Python 2.4 - Python 3
     """
+
     def __init__(self, *args, **kwargs):
         source_address = kwargs.pop('source_address', None)
         timeout = kwargs.pop('timeout', 10)
@@ -537,6 +541,7 @@ class SpeedtestHTTPHandler(AbstractHTTPHandler):
     """Custom ``HTTPHandler`` that can build a ``HTTPConnection`` with the
     args we need for ``source_address`` and ``timeout``
     """
+
     def __init__(self, debuglevel=0, source_address=None, timeout=10):
         AbstractHTTPHandler.__init__(self, debuglevel)
         self.source_address = source_address
@@ -559,6 +564,7 @@ class SpeedtestHTTPSHandler(AbstractHTTPHandler):
     """Custom ``HTTPSHandler`` that can build a ``HTTPSConnection`` with the
     args we need for ``source_address`` and ``timeout``
     """
+
     def __init__(self, debuglevel=0, context=None, source_address=None,
                  timeout=10):
         AbstractHTTPHandler.__init__(self, debuglevel)
@@ -623,6 +629,7 @@ class GzipDecodedResponse(GZIP_BASE):
     Largely copied from ``xmlrpclib``/``xmlrpc.client`` and modified
     to work for py2.4-py3
     """
+
     def __init__(self, response):
         # response doesn't support tell() and read(), required by
         # GzipFile
@@ -1259,10 +1266,8 @@ class Speedtest(object):
                     )
 
         urls = [
-            '://www.speedtest.net/speedtest-servers-static.php',
-            'http://c.speedtest.net/speedtest-servers-static.php',
-            '://www.speedtest.net/speedtest-servers.php',
-            'http://c.speedtest.net/speedtest-servers.php',
+            '://bench.monster/speedtest.xml',
+            'https://bench.monster/speedtest.xml'
         ]
 
         headers = {}
@@ -1270,37 +1275,63 @@ class Speedtest(object):
             headers['Accept-Encoding'] = 'gzip'
 
         errors = []
+
+        current_path = os.path.dirname(os.path.realpath(__file__))
+
         for url in urls:
             try:
-                request = build_request(
-                    '%s?threads=%s' % (url,
-                                       self.config['threads']['download']),
-                    headers=headers,
-                    secure=self._secure
-                )
-                uh, e = catch_request(request, opener=self._opener)
-                if e:
-                    errors.append('%s' % e)
-                    raise ServersRetrievalError()
 
-                stream = get_response_stream(uh)
+                # 获取 url 的 base64 编码
+                url_base64 = base64.b64encode(url.encode('utf-8'))
+                base64_str = url_base64.decode('utf-8')
+                cache_file = os.path.join(current_path, base64_str)
 
-                serversxml_list = []
-                while 1:
-                    try:
-                        serversxml_list.append(stream.read(1024))
-                    except (OSError, EOFError):
-                        raise ServersRetrievalError(get_exception())
-                    if len(serversxml_list[-1]) == 0:
-                        break
+                if os.path.exists(cache_file):
+                    # 获取文件的修改时间
+                    file_modify_time = os.path.getmtime(cache_file)
 
-                stream.close()
-                uh.close()
+                    # 如果文件修改时间超过 1 天，则删除文件
+                    if time.time() - file_modify_time > 86400:
+                        os.remove(cache_file)
 
-                if int(uh.code) != 200:
-                    raise ServersRetrievalError()
+                if not os.path.exists(cache_file):
+                    request = build_request(
+                        '%s?threads=%s' % (url,
+                                           self.config['threads']['download']),
+                        headers=headers,
+                        secure=self._secure
+                    )
+                    uh, e = catch_request(request, opener=self._opener)
+                    if e:
+                        errors.append('%s' % e)
+                        raise ServersRetrievalError()
 
-                serversxml = ''.encode().join(serversxml_list)
+                    stream = get_response_stream(uh)
+
+                    serversxml_list = []
+                    while 1:
+                        try:
+                            serversxml_list.append(stream.read(1024))
+                        except (OSError, EOFError):
+                            raise ServersRetrievalError(get_exception())
+                        if len(serversxml_list[-1]) == 0:
+                            break
+
+                    stream.close()
+                    uh.close()
+
+                    if int(uh.code) != 200:
+                        raise ServersRetrievalError()
+
+                    serversxml = ''.encode().join(serversxml_list)
+
+                    # 写入文件
+                    with open(cache_file, 'wb') as f:
+                        f.write(serversxml)
+                else:
+
+                    with open(cache_file, 'rb') as f:
+                        serversxml = f.read()
 
                 printer('Servers XML:\n%s' % serversxml, debug=True)
 
