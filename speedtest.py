@@ -1266,8 +1266,7 @@ class Speedtest(object):
                     )
 
         urls = [
-            '://bench.monster/speedtest.xml',
-            'https://bench.monster/speedtest.xml'
+            'https://c.speedtest.net/speedtest-servers-static.php'
         ]
 
         headers = {}
